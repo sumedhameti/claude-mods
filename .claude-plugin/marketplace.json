@@ -1,0 +1,11 @@
+{
+  "name": "claude-mods",
+  "owner": { "name": "sumedhameti" },
+  "plugins": [
+    {
+      "name": "minn-circuit",
+      "source": "./plugins/minn-circuit",
+      "description": "A neon MINN circuit above the prompt that trains while Claude thinks and runs feed-forward while it answers"
+    }
+  ]
+}

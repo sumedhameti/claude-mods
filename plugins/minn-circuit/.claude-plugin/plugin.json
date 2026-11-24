@@ -1,0 +1,6 @@
+{
+  "name": "minn-circuit",
+  "version": "0.1.0",
+  "description": "A neon MINN circuit above the prompt that trains while Claude thinks and runs feed-forward while it answers",
+  "types": "./types/index.d.ts"
+}
