@@ -5,6 +5,7 @@ Mods for Claude Code: changes to Claude's own interface and behaviour, written a
 | Mod | What it does |
 | --- | --- |
 | [`minn-circuit`](plugins/minn-circuit) | A neon measurement-induced quantum neural network above the prompt that trains while Claude thinks and runs a forward pass while it answers |
+| [`bloch-spinner`](plugins/bloch-spinner) | A qubit on a Bloch sphere above the prompt: random gates turn it while Claude thinks, and it is measured to 0 or 1 when Claude starts answering |
 
 ## Installing a mod
 
@@ -39,6 +40,16 @@ The circuit follows the paper's Fig. 1, laid out left to right: an input percept
 - **When the turn ends**, one last full pass runs and the output neurons stay lit.
 
 `/minn` hides or shows the band. It draws on the desktop app, mobile and VS Code; the terminal gets a plain glyph version.
+
+## bloch-spinner
+
+A small Bloch sphere at the right end of a row above the prompt, holding one qubit that starts at |0⟩.
+
+- **While Claude thinks or runs tools**, a random gate acts about once a second: H, X, Y, Z, S, T, √X, or a rotation Rx, Ry or Rz by π/4 to 2π/3. The vector turns about the gate's axis and leaves a short trail. A gate that would not move the vector, such as a Z rotation at a pole, is skipped.
+- **When Claude starts writing its answer**, the qubit is measured. For |ψ⟩ = α|0⟩ + β|1⟩ the outcome is 0 with probability P(0) = |α|² = (1 + z)/2, where z is the vector's height, and 1 with P(1) = |β|². The vector slides along its meridian to that pole, a ring pulses where it lands, and the bit is shown beside the sphere.
+- **The state collapses**: the bit stays until Claude thinks again, and the gates then start from the measured pole, in the next turn too.
+
+It draws on the desktop app, mobile and VS Code; the terminal has no vector drawing, so it shows nothing there.
 
 ## Adding a mod
 

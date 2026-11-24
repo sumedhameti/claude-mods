@@ -1,0 +1,6 @@
+{
+  "name": "bloch-spinner",
+  "version": "0.1.0",
+  "description": "A Bloch sphere above the prompt: random gates turn the qubit while Claude thinks or runs tools, and it is measured to 0 or 1 (Born rule) when Claude starts answering",
+  "types": "./types/index.d.ts"
+}
