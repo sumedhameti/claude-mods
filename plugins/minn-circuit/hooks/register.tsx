@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, Timer } from 'claude-code'
 
 import type { MinnCircuit, MinnMode } from '../types'
 
@@ -40,27 +40,38 @@ const measured = (mask: number) => ALL.filter(q => (mask & (1 << q)) !== 0)
 
 const FIXED_TRAJECTORY = [0b100101, 0b010010, 0b001100, 0b110001, 0b001010, 0b010100]
 
-const EMPTY: MinnCircuit = { mode: 'idle', turnId: '', trajectory: FIXED_TRAJECTORY, changedAt: 0 }
+const EMPTY: MinnCircuit = {
+  mode: 'idle',
+  turnId: '',
+  trajectory: FIXED_TRAJECTORY,
+  shots: [],
+  changedAt: 0,
+  startedAt: 0,
+  passAt: 0,
+}
 
-const circuit = atom({ plugin: 'minn-circuit', key: 'circuit' } as const, EMPTY, { shape: 'circuit-2' })
+const circuit = atom({ plugin: 'minn-circuit', key: 'circuit' } as const, EMPTY, { shape: 'circuit-4' })
 const isHidden = atom({ plugin: 'minn-circuit', key: 'isHidden' } as const, false)
 
 // ---- geometry: time runs left to right -----------------------------------
+//
+// The band draws the image at its full width, so its height follows W / H:
+// spread wide (W about 11.5 H) to keep the band low.
 
 const H = 112
 const DY = 15
 const wy = (q: number) => H / 2 + (q - (QUBITS - 1) / 2) * DY
 const R = 3.5
 const X_INPUT = 22
-const X_GATE0 = 96
+const X_GATE0 = 140
 const GATE_W = 18
-const GATE_TO_METER = 26
+const GATE_TO_METER = 52
 const METER = 11
-const PITCH = 124
+const PITCH = 188
 const xGate = (l: number) => X_GATE0 + l * PITCH
 const xMeter = (l: number) => xGate(l) + GATE_W + GATE_TO_METER
 const LAST_METER_END = xMeter(LAYERS - 1) + METER
-const X_OUTPUT = LAST_METER_END + 64
+const X_OUTPUT = LAST_METER_END + 100
 const W = X_OUTPUT + 22
 /** Drawn wider than its coordinates so the band scales it to fill. */
 const DRAWN_W = 1400
@@ -99,10 +110,26 @@ const TRAIN = { period: 3.2, shots: 4, shotGap: 0.38, step: 0.043 }
 // The answer's pulse travels and flashes exactly as fast as a training shot.
 const FF = { step: TRAIN.step, period: STAGES * TRAIN.step + 0.45 }
 const FLASH = { peak: 0.048, gone: 0.29 } // seconds into a piece's flash
-/** How long after the turn ends a redraw still plays the final pass. */
-const ENDING_MS = 4000
 
-// The shots' trajectories: fixed per drawing, so a redraw does not jump.
+// The band fades in when a turn starts (a message sent) and fades out once
+// the turn's last feed-forward pass has lit the outputs; then it is gone.
+const FADE = {
+  in: 0.8, // as long as the fade-out
+  /** Seconds after the turn ends: the final pass lights the outputs by ~1.2s. */
+  outAt: 1.8,
+  /** An interrupted turn has no final pass: it fades at once. */
+  outAtAborted: 0,
+  out: 0.8,
+}
+const outAt = (mode: MinnMode) => (mode === 'aborted' ? FADE.outAtAborted : FADE.outAt)
+/** How long after the turn ends the band is drawn at all. */
+export const goneMs = (mode: MinnMode) => Math.round((outAt(mode) + FADE.out) * 1000)
+const isEnded = (mode: MinnMode) => mode === 'done' || mode === 'aborted'
+/** Whether the band has nothing to show: no turn yet, or its fade-out is over. */
+export const isGone = (c: MinnCircuit, now: number) =>
+  c.mode === 'idle' || (isEnded(c.mode) && now - c.changedAt >= goneMs(c.mode))
+
+// Shots to fall back on when none were sampled (a value from before a reload).
 const SHOT_TRAJECTORIES = Array.from({ length: TRAIN.shots }, (_, k) =>
   Array.from({ length: LAYERS }, (_, l) => {
     let mask = 0
@@ -110,6 +137,13 @@ const SHOT_TRAJECTORIES = Array.from({ length: TRAIN.shots }, (_, k) =>
     return mask === 0 ? 1 << ((k + l) % QUBITS) : mask
   }),
 )
+
+// Every pass samples its own trajectory, as in the paper: each qubit is
+// measured with probability p after each layer, afresh on every shot. A timer
+// samples new ones at each pass boundary (a training step's shots, a
+// feed-forward pulse), and the redraw starts the loop over on them.
+const sampleShots = () => Array.from({ length: TRAIN.shots }, sampleTrajectory)
+const periodMs = (mode: MinnMode) => (mode === 'training' ? TRAIN.period : FF.period) * 1000
 
 const pct = (s: number) => `${((s / TRAIN.period) * 100).toFixed(1)}%`
 
@@ -143,14 +177,22 @@ const STYLE = `
 @keyframes shot{0%{opacity:0}${pct(FLASH.peak)}{opacity:.75}${pct(FLASH.gone)}{opacity:0}100%{opacity:0}}
 .shot path{stroke:#bfefff;stroke-width:.9;fill:none}
 .shot.fill{fill:#bfefff}
-.score{fill:#ffb02e;opacity:0;animation:score ${TRAIN.period}s linear infinite}
+.score{opacity:0;animation:score ${TRAIN.period}s linear infinite}
 @keyframes score{0%{opacity:0}${pct(1.6)}{opacity:.42}${pct(2.0)}{opacity:.55}${pct(2.25)}{opacity:0}100%{opacity:0}}
-.cost{fill:#ffb02e;opacity:0;animation:cost ${TRAIN.period}s ease-out infinite}
+.cost{fill:#ece6ff;opacity:0;animation:cost ${TRAIN.period}s ease-out infinite}
 @keyframes cost{0%{opacity:0}${pct(1.6)}{opacity:0}${pct(1.7)}{opacity:1}${pct(2.0)}{opacity:0}100%{opacity:0}}
 .upd{opacity:0;animation:upd ${TRAIN.period}s ease-out infinite}
 @keyframes upd{0%{opacity:0}${pct(2.0)}{opacity:0}${pct(2.08)}{opacity:1}${pct(2.45)}{opacity:0}100%{opacity:0}}
-.upd path{stroke:#ffb02e;stroke-width:1;fill:none}
-.upd.fill{fill:#ffb02e}
+.upd path{stroke:#d9ceff;stroke-width:1;fill:none}
+/* Training lights each piece in a brighter shade of its own color. */
+.score.a{fill:#22e5ff}
+.score.b{fill:#ff3df2}
+.upd.fill.a{fill:#9ff5ff}
+.upd.fill.b{fill:#ff9ef9}
+.fi{animation:fi ${FADE.in}s ease-in-out 1 both}
+@keyframes fi{from{opacity:0}to{opacity:1}}
+.fo{animation:fo ${FADE.out}s ease-in-out 1 both}
+@keyframes fo{from{opacity:1}to{opacity:0}}
 `
 
 const DEFS =
@@ -235,7 +277,10 @@ const forwardPass = (traj: number[], cls: string, start: number, step: number) =
 export const drawCircuit = (c: MinnCircuit, now: number) => {
   const mode = c.mode
   // The answer is out: one last full pass, ending as the outputs light.
-  const isEnding = mode === 'done' && now - c.changedAt < ENDING_MS
+  const sinceEnd = (now - c.changedAt) / 1000
+  const isEnding = mode === 'done' && sinceEnd < goneMs(mode) / 1000
+  // A redraw mid-animation picks up where the last one was, never from the top.
+  const sinceStart = (now - c.startedAt) / 1000
   const isTraining = mode === 'training'
   const traj = c.trajectory.length === LAYERS ? c.trajectory : FIXED_TRAJECTORY
 
@@ -264,32 +309,35 @@ export const drawCircuit = (c: MinnCircuit, now: number) => {
     lit.push(sites.map(q => meterShape(q, xMeter(l), isTraining ? 'm idle' : 'm')).join(''))
   }
   const outCls = isEnding ? 'n end' : mode === 'done' ? 'n lit' : 'n'
-  const outAt = isEnding ? at(stage.outputs * FF.step) : ''
-  lit.push(OUTPUT_PTS.map(p => neuron(p, outCls, outAt)).join(''))
+  const outLitAt = isEnding ? at(stage.outputs * FF.step - sinceEnd) : ''
+  lit.push(OUTPUT_PTS.map(p => neuron(p, outCls, outLitAt)).join(''))
 
   if (mode === 'feedforward') over.push(forwardPass(traj, 'pf', 0, FF.step))
-  if (isEnding) over.push(forwardPass(traj, 'pfo', 0, FF.step))
+  if (isEnding) over.push(forwardPass(traj, 'pfo', -sinceEnd, FF.step))
 
   if (isTraining) {
     // 1. The shots, each on its own trajectory.
-    SHOT_TRAJECTORIES.forEach((shot, k) => over.push(forwardPass(shot, 'shot', k * TRAIN.shotGap, TRAIN.step)))
+    const shots = c.shots.length === TRAIN.shots ? c.shots : SHOT_TRAJECTORIES
+    shots.forEach((shot, k) => over.push(forwardPass(shot, 'shot', k * TRAIN.shotGap, TRAIN.step)))
     // 2. The local scores gathering in each gate column.
-    for (let l = 0; l < LAYERS; l++) over.push(bonds(l).map(q => gateRect(l, q, 'score')).join(''))
+    for (let l = 0; l < LAYERS; l++) over.push(bonds(l).map(q => gateRect(l, q, `score ${l % 2 === 0 ? 'a' : 'b'}`)).join(''))
     // 3. The cost, at the outputs.
     over.push(OUTPUT_PTS.map(p => neuron(p, 'cost')).join(''))
     // 4. The update: every weight and gate at once.
     over.push(wrap('upd', '', path('', all.w0) + all.wl.map(d => path('', d)).join('') + path('', all.wL)))
-    for (let l = 0; l < LAYERS; l++) over.push(bonds(l).map(q => gateRect(l, q, 'upd fill')).join(''))
+    for (let l = 0; l < LAYERS; l++) over.push(bonds(l).map(q => gateRect(l, q, `upd fill ${l % 2 === 0 ? 'a' : 'b'}`)).join(''))
   }
 
   const body = `${net.join('')}<g class="glow">${lit.join('')}${over.join('')}</g>`
   const isDim = mode === 'idle' || mode === 'aborted'
   const drawnH = Math.round((DRAWN_W * H) / W)
+  let whole = `<rect class="bg" width="${W}" height="${H}" rx="10"/>` + (isDim ? `<g class="dim">${body}</g>` : body)
+  if (isEnded(mode)) whole = wrap('fo', at(outAt(mode) - sinceEnd), whole)
+  if (sinceStart < FADE.in) whole = wrap('fi', at(-sinceStart), whole)
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" width="${DRAWN_W}" height="${drawnH}" viewBox="0 0 ${W} ${H}">` +
     `<style>${STYLE}</style>${DEFS}` +
-    `<rect class="bg" width="${W}" height="${H}" rx="10"/>` +
-    (isDim ? `<g class="dim">${body}</g>` : body) +
+    whole +
     '</svg>'
   )
 }
@@ -303,18 +351,40 @@ const describe = (mode: MinnMode) =>
 
 // ---- hooks ---------------------------------------------------------------
 
-/** Switch mode for the running main turn; a fresh pass samples a trajectory. */
+/** The pending resample; a reload starts with none (its timers stop). */
+let resample: Timer | undefined
+
+const stopResampling = () => {
+  resample?.cancel()
+  resample = undefined
+}
+
+/** At the end of the pass now running, sample the next one's trajectories. */
+const scheduleResample = ($: EngineInterface, c: MinnCircuit, now: number) => {
+  stopResampling()
+  if (c.mode !== 'training' && c.mode !== 'feedforward') return
+  const { turnId, mode, passAt } = c
+  resample = $.clock.after(Math.max(50, passAt + periodMs(mode) - now), () => {
+    void (async () => {
+      const at = await $.clock.now()
+      const next = await update($, circuit, (cur): MinnCircuit =>
+        cur.turnId !== turnId || cur.mode !== mode || cur.passAt !== passAt
+          ? cur
+          : { ...cur, trajectory: sampleTrajectory(), shots: sampleShots(), passAt: at },
+      )
+      if (next.passAt !== passAt) scheduleResample($, next, at)
+    })().catch(() => undefined)
+  })
+}
+
+/** Switch mode for the running main turn; the new pass samples afresh. */
 const setMode = async ($: EngineInterface, turnId: string, mode: MinnMode) => {
   const now = await $.clock.now()
-  await update($, circuit, (cur): MinnCircuit => {
+  const next = await update($, circuit, (cur): MinnCircuit => {
     if (cur.turnId !== turnId || cur.mode === mode || cur.mode === 'done' || cur.mode === 'aborted') return cur
-    return {
-      ...cur,
-      mode,
-      trajectory: mode === 'feedforward' ? sampleTrajectory() : cur.trajectory,
-      changedAt: now,
-    }
+    return { ...cur, mode, trajectory: sampleTrajectory(), shots: sampleShots(), changedAt: now, passAt: now }
   })
+  if (next.turnId === turnId && next.mode === mode && next.passAt === now) scheduleResample($, next, now)
 }
 
 export const register: Register = on => {
@@ -332,7 +402,17 @@ export const register: Register = on => {
   on('turn.start', async ($, e, next) => {
     if (e.agentId !== undefined) return next(e)
     const now = await $.clock.now()
-    await update($, circuit, (cur): MinnCircuit => ({ ...cur, mode: 'training', turnId: e.turnId, changedAt: now }))
+    const c = await update($, circuit, (cur): MinnCircuit => ({
+      ...cur,
+      mode: 'training',
+      turnId: e.turnId,
+      trajectory: sampleTrajectory(),
+      shots: sampleShots(),
+      changedAt: now,
+      startedAt: now,
+      passAt: now,
+    }))
+    scheduleResample($, c, now)
     return next(e)
   })
 
@@ -363,9 +443,15 @@ export const register: Register = on => {
   on('turn.complete', async ($, e, next) => {
     if (e.agentId !== undefined) return next(e)
     const now = await $.clock.now()
-    await update($, circuit, (cur): MinnCircuit =>
-      cur.turnId !== e.turnId ? cur : { ...cur, mode: e.isAborted ? 'aborted' : 'done', changedAt: now },
-    )
+    const mode: MinnMode = e.isAborted ? 'aborted' : 'done'
+    stopResampling()
+    await update($, circuit, (cur): MinnCircuit => (cur.turnId !== e.turnId ? cur : { ...cur, mode, changedAt: now }))
+    // Once the fade-out is over, put the band away (a write redraws it).
+    $.clock.after(goneMs(mode) + 100, () => {
+      void update($, circuit, (cur): MinnCircuit =>
+        cur.turnId === e.turnId && cur.mode === mode ? { ...cur, mode: 'idle' } : cur,
+      ).catch(() => undefined)
+    })
     return next(e)
   })
 
@@ -373,6 +459,8 @@ export const register: Register = on => {
     if (e.props.hasSurvey || (await read($, isHidden))) return next(e)
     const c = await read($, circuit)
     const now = await $.clock.now()
+    // Nothing between turns: it fades in when a message is sent.
+    if (isGone(c, now)) return next(e)
 
     if (e.surface === 'desktop' || e.surface === 'mobile' || e.surface === 'vscode') {
       const { Box, Svg } = $.ui.resolve(e)
