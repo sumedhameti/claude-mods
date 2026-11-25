@@ -35,9 +35,11 @@ A band above the prompt that draws a measurement-induced quantum neural network 
 
 The circuit follows the paper's Fig. 1, laid out left to right: an input perceptron feeds the first layer's gate angles (W⁰x); six hidden layers each run a column of two-qubit matchgates on alternating bonds, then measure each qubit with probability p = 0.5; the measured outcomes feed forward through Wˡ into the next layer's angles; and an output perceptron reads the last layer's outcomes.
 
-- **Training**, while Claude thinks or runs tools, is drawn as the paper trains: REINFORCE. A burst of faint forward shots, each on its own sampled set of measured sites; the gates gather their local scores; the outputs flash as the shots are scored; then every weight and gate updates at once. Nothing runs backward.
+- **When you send a message**, the band fades in. Between turns it is hidden.
+- **Training**, while Claude thinks or runs tools, is drawn as the paper trains: REINFORCE. A burst of faint forward shots, each on its own sampled set of measured sites; the gates fill in brighter as they gather their local scores; the outputs flash as the shots are scored; then every weight and gate updates at once, each in a brighter shade of its own color. Nothing runs backward.
 - **Feed-forward**, while Claude writes its answer, is one bright pulse from the inputs to the outputs, repeated while text streams, at the same speed as a training shot.
-- **When the turn ends**, one last full pass runs and the output neurons stay lit.
+- **Every pass samples afresh**: each qubit is measured with probability p after each layer, drawn anew for every training shot and every feed-forward pulse.
+- **When the turn ends**, one last full pass lights the output neurons, then the band fades out. An interrupted turn fades out at once.
 
 `/minn` hides or shows the band. It draws on the desktop app, mobile and VS Code; the terminal gets a plain glyph version.
 
